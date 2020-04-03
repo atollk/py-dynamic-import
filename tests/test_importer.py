@@ -1,5 +1,7 @@
 import os
+import sys
 import tempfile
+
 import pytest
 
 from dynamic_import.importer import DynamicImporter
@@ -62,24 +64,6 @@ class TestModuleTree:
     def filename_d(self) -> str:
         return os.path.join(self.directory, "pkg", "subpkg", "d.py")
 
-    def modulename_a(self) -> str:
-        return os.path.join(self.directory, "a")
-
-    def modulename_pkg(self) -> str:
-        return os.path.join(self.directory, "pkg")
-
-    def modulename_b(self) -> str:
-        return self.modulename_pkg() + ".b"
-
-    def modulename_subpkg(self) -> str:
-        return self.modulename_pkg() + ".subpkg"
-
-    def modulename_c(self) -> str:
-        return self.modulename_subpkg() + ".c"
-
-    def modulename_d(self) -> str:
-        return self.modulename_subpkg() + ".d"
-
     def write_files(self):
         with open(self.filename_a(), "w") as file:
             file.write(self.content_a())
@@ -98,39 +82,12 @@ def module_tree():
 
 
 @pytest.fixture
-def importer_a(module_tree):
-    with DynamicImporter(module_tree.modulename_a()) as importer:
+def importer(module_tree):
+    modules = len(sys.modules)
+    with DynamicImporter(module_tree.directory) as importer:
         yield importer
-
-
-@pytest.fixture
-def importer_b(module_tree):
-    with DynamicImporter(module_tree.modulename_b()) as importer:
-        yield importer
-
-
-@pytest.fixture
-def importer_c(module_tree):
-    with DynamicImporter(module_tree.modulename_c()) as importer:
-        yield importer
-
-
-@pytest.fixture
-def importer_d(module_tree):
-    with DynamicImporter(module_tree.modulename_d()) as importer:
-        yield importer
-
-
-@pytest.fixture
-def importer_pkg(module_tree):
-    with DynamicImporter(module_tree.modulename_pkg()) as importer:
-        yield importer
-
-
-@pytest.fixture
-def importer_subpkg(module_tree):
-    with DynamicImporter(module_tree.modulename_subpkg()) as importer:
-        yield importer
+        importer.unimport_all()
+    assert len(sys.modules) == modules
 
 
 def test_TestModuleTree(module_tree):
@@ -138,85 +95,87 @@ def test_TestModuleTree(module_tree):
 
 
 def test_importer_nocrash(module_tree: TestModuleTree):
-    importer = DynamicImporter(module_tree.modulename_a())
+    importer = DynamicImporter(module_tree.directory)
     importer.open()
-    importer.load()
+    importer.import_module('a')
     importer.close()
-    importer.unload()
+    importer.unimport_all()
 
-    with DynamicImporter(module_tree.modulename_a()) as importer2:
+    with DynamicImporter(module_tree.directory) as importer2:
         importer2.reload()
 
 
-def test_importer_load_correctly(module_tree: TestModuleTree, importer_a):
-    assert importer_a.module.A == 1
-    assert importer_a.module.AA == 2
-
+def test_importer_load_correctly(module_tree: TestModuleTree, importer):
+    importer.import_module('a')
+    assert importer.modules.a.A == 1
+    assert importer.modules.a.AA == 2
 
 def test_importer_unload_correctly(module_tree: TestModuleTree):
-    importer = DynamicImporter(module_tree.modulename_a())
+    importer = DynamicImporter(module_tree.directory)
     importer.open()
-    importer.load()
-    assert importer.module.A == 1
-    assert importer.module.AA == 2
-    module = importer.module
-    importer.unload()
-    assert importer.module is None
+    importer.import_module('a')
+    assert importer.modules.a.A == 1
+    assert importer.modules.a.AA == 2
+    module = importer.modules.a
+    importer.unimport_all()
+    assert not hasattr(importer.modules, 'a')
     assert not hasattr(module, "A")
     importer.close()
 
 
-def test_importer_reload_change_value(module_tree: TestModuleTree, importer_a):
-    assert importer_a.module.A == 1
-    assert importer_a.module.AA == 2
+def test_importer_reload_change_value(module_tree: TestModuleTree, importer):
+    importer.import_module('a')
+    assert importer.modules.a.A == 1
+    assert importer.modules.a.AA == 2
     module_tree.content_variables["AA"] = "5"
     module_tree.write_files()
-    importer_a.reload()
-    assert importer_a.module.A == 1
-    assert importer_a.module.AA == 5
+    importer.reload()
+    assert importer.modules.a.A == 1
+    assert importer.modules.a.AA == 5
 
 
-def test_importer_reload_remove_value(module_tree: TestModuleTree, importer_a):
-    assert importer_a.module.A == 1
-    assert importer_a.module.AA == 2
+def test_importer_reload_remove_value(module_tree: TestModuleTree, importer):
+    importer.import_module('a')
+    assert importer.modules.a.A == 1
+    assert importer.modules.a.AA == 2
     module_tree.content_a = lambda: "A = 1"
     module_tree.write_files()
-    importer_a.reload()
-    assert importer_a.module.A == 1
-    assert not hasattr(importer_a.module, "AA")
+    importer.reload()
+    assert importer.modules.a.A == 1
+    assert not hasattr(importer.modules.a, "AA")
 
 
-def test_subpackage_import(module_tree: TestModuleTree, importer_b):
-    assert importer_b.module.B == 3
+def test_subpackage_import(module_tree: TestModuleTree, importer):
+    importer.import_module('pkg.b')
+    assert importer.modules.pkg.b.B == 3
 
 
-def test_subpackage_reload_parent_effects_children(module_tree: TestModuleTree, importer_subpkg):
-    importer_subpkg.add_submodule("pkg.subpkg.c")
-    importer_subpkg.add_submodule("pkg.subpkg.d")
-    assert importer_subpkg.module.c.C == 4
-    assert importer_subpkg.module.d.D == 5
+def test_subpackage_reload_parent_effects_children(module_tree: TestModuleTree, importer):
+    importer.import_module('pkg.subpkg.c')
+    importer.import_module('pkg.subpkg.d')
+    assert importer.modules.pkg.subpkg.c.C == 4
+    assert importer.modules.pkg.subpkg.d.D == 5
     module_tree.content_variables["C"] = "0"
     module_tree.content_variables["D"] = "0"
     module_tree.write_files()
-    importer_subpkg.reload()
-    assert importer_subpkg.module.c.C == 0
-    assert importer_subpkg.module.d.D == 0
+    importer.reload()
+    assert importer.modules.pkg.subpkg.c.C == 0
+    assert importer.modules.pkg.subpkg.d.D == 0
 
 
-def test_subpackage_reload_recursive_reload(module_tree: TestModuleTree, importer_pkg):
+def test_subpackage_reload_recursive_reload(module_tree: TestModuleTree, importer):
     importer_pkg.add_submodule("b")
     importer_pkg.add_submodule("subpkg.c")
     importer_pkg.add_submodule("subpkg.d")
 
 
-def test_effect_normal_import(module_tree: TestModuleTree, importer_a):
-    assert importer_a.module.A == 1
+def test_effect_normal_import(module_tree: TestModuleTree, importer):
+    assert importer.modules.a.A == 1
     import a
     assert a.A == 1
     module_tree.content_variables["A"] = "0"
     module_tree.write_files()
     import importlib
-    importlib.reload(importer_a.module)
-    #importer_a.reload()
+    importlib.reload(importer.modules.a)
+    # importer_a.reload()
     assert a.A == 0
-
